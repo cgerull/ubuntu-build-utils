@@ -1,0 +1,103 @@
+name: Docker-build-and-push
+on:
+  pull_request:
+  release:
+    # Publish tagged image.
+    types: [published]
+
+jobs:
+  # unit-tests:
+  #   # The type of runner that the job will run on
+  #   runs-on: ubuntu-latest
+ 
+  #   # Steps represent a sequence of tasks that will be executed as part of the job
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #    # Runs a single command using the runners shell
+  #     - name: Check and prepare environment
+  #       run: |
+  #         ls -lh
+  #         make --version
+  #         docker --version 
+  #         python --version
+  #         python3 --version
+  #         pip --version
+  #         pip install -r requirements-dev.txt
+  #     - name: lint
+  #       run: make lint
+        
+  #     - name: test
+  #       run: make test
+  scan:
+    name: Scan
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build an image from Dockerfile
+        run: |
+          docker build -t cgerull/builder:${{ github.sha }} .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'cgerull/builder:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deploy:
+    name: PushImage
+    # needs: unit-tests
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_PATH: "cgerull/ubuntu-build-utils"
+      IMAGE_TAG: "null"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Login to DockerHub
+        uses: docker/login-action@v1 
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_SECRET }}
+      - name: Set image tag
+        run: |
+          # Strip git ref prefix from version
+          if [ $(echo "${{ github.ref }}" | grep tags) ]; then
+            VER=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,' | sed -e 's/^v//')
+            echo "Found TAG $VER"
+          else
+            VER=latest
+            echo "No TAG found, Use latest"
+          fi
+          echo "IMAGE_TAG=$VER" >> $GITHUB_ENV
+      - name: Build new image name
+        run: |
+          IMAGE_NAME="${{ env.IMAGE_PATH }}:${{ env.IMAGE_TAG }}"
+          echo "IMAGE_NAME - $IMAGE_NAME"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+      - name: Print GitHub environment
+        run: |
+          echo "IMAGE_PATH - ${{ env.IMAGE_PATH }}"
+          echo "IMAGE_TAG - ${{ env.IMAGE_TAG }}"
+          echo "IMAGE_NAME - ${{ env.IMAGE_NAME }}"
+      - name: Build and push
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: ${{ env.TAG}}
+          tags: ${{ env.IMAGE_NAME }}
+      # - name: Set output
+      #   run: echo "{name}={value}" >> $GITHUB_OUTPUT
